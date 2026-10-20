@@ -1,0 +1,8 @@
+{
+  "seg": {
+    "weights": "weights/best_seg.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 640
+  }
+}

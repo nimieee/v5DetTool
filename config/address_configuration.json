@@ -1,0 +1,21 @@
+{
+  "aqm_offline": {
+    "platform_url": {
+      "host": "0.0.0.0",
+      "port": 5002
+    },
+    "aqm_upfile_url": "http://127.0.0.1:8080/api/upfile",
+    "aqm_img_msg_url": "http://127.0.0.1:8080/api/aqm/imgMsg",
+    "aqm_video_msg_url": "http://127.0.0.1:8080/api/aqm/videoMsg",
+    "aqm_msg_url": "http://127.0.0.1:8080/api/aqm/finish",
+    "model": {
+      "weights": "det_to_xml/weights/vest_helmet.pt",
+      "conf_thres": 0.5,
+      "iou_thres": 0.5,
+      "img_size": 640
+    },
+    "frame_interval": 5,
+    "alarm_interval": 10,
+    "save_path": "result/aqm_offline"
+  }
+}

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# IDE / AI 助手配置（.continue 内含 API Key，切勿提交）
+.idea/
+.continue/
+
+# 模型权重（体积大，单独备份或用 Git LFS 管理）
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# 运行产物
+runs/
+*.log
+result/
+log/

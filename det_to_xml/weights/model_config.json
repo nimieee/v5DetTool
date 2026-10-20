@@ -1,0 +1,60 @@
+{
+  "det": {
+    "weights": "weights/last.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1280
+  },
+
+  "xhf": {
+    "weights": "weights/last.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1280
+  },
+
+    "xjdet": {
+    "weights": "weights/best_6cls.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1088
+  },
+
+   "shigong_det": {
+    "weights": "weights/shigong_det0421.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1280
+  },
+   "firesmoke": {
+    "weights": "weights/firesmoke.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1024
+  },
+   "xiliu": {
+    "weights": "weights/best_xiliu_0911.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1088
+  },
+
+   "shuima": {
+    "weights": "weights/shuimaceshi.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1280
+  },
+  "jiaogong": {
+    "weights": "weights/jiaogong_det.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 1024
+  },
+  "vest_helmet": {
+    "weights": "weights/vest_helmet.pt",
+    "conf_thres": 0.5,
+    "iou_thres": 0.5,
+    "img_size": 128
+  }
+}
