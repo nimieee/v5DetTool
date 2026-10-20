@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>安全帽离线检测</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #333; }
+  header { background: #1f3a5f; color: #fff; padding: 14px 24px; font-size: 20px; }
+  main { display: flex; gap: 16px; padding: 16px; height: calc(100vh - 54px); }
+  .panel { background: #fff; border-radius: 6px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  #left { width: 340px; display: flex; flex-direction: column; gap: 16px; }
+  #right { flex: 1; overflow-y: auto; }
+  h3 { margin: 0 0 12px; font-size: 16px; }
+  #drop { border: 2px dashed #9bb; border-radius: 6px; padding: 24px 8px; text-align: center; cursor: pointer; color: #567; }
+  #drop.over { background: #eef6ff; border-color: #3a8ee6; }
+  #fileName { margin: 8px 0; font-size: 13px; color: #666; word-break: break-all; }
+  button { background: #3a8ee6; color: #fff; border: none; border-radius: 4px; padding: 8px 16px; cursor: pointer; width: 100%; }
+  button:disabled { background: #a0c4ee; cursor: not-allowed; }
+  .bar { height: 8px; background: #e5e5e5; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  .bar > div { height: 100%; background: #3a8ee6; width: 0; transition: width .3s; }
+  #msg { font-size: 13px; margin-top: 8px; min-height: 18px; }
+  #taskList { flex: 1; overflow-y: auto; }
+  .task { padding: 8px; border-radius: 4px; cursor: pointer; border: 1px solid #eee; margin-bottom: 6px; font-size: 13px; }
+  .task:hover { background: #f5f9ff; }
+  .task.active { border-color: #3a8ee6; background: #eef6ff; }
+  .task .path { color: #888; word-break: break-all; }
+  .tag { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 12px; color: #fff; margin-left: 4px; }
+  .loading, .running { background: #e6a23c; } .finish { background: #67c23a; } .error { background: #f56c6c; }
+  .alarm-num { background: #f56c6c; }
+  video { width: 100%; max-height: 60vh; background: #000; border-radius: 4px; }
+  #alarms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 12px; }
+  .alarm { border: 1px solid #f3c2c2; border-radius: 4px; overflow: hidden; cursor: pointer; font-size: 13px; }
+  .alarm img { width: 100%; display: block; }
+  .alarm div { padding: 4px 8px; background: #fff5f5; }
+  .empty { color: #999; text-align: center; padding: 40px 0; }
+  .summary { margin-bottom: 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>安全帽离线检测</header>
+<main>
+  <div id="left">
+    <div class="panel">
+      <h3>选择本地视频</h3>
+      <div id="drop">点击选择或拖拽视频文件到此处</div>
+      <input type="file" id="file" accept="video/*" hidden>
+      <div id="fileName"></div>
+      <button id="startBtn" disabled>开始检测</button>
+      <div class="bar"><div id="uploadBar"></div></div>
+      <div id="msg"></div>
+    </div>
+    <div class="panel" style="flex:1;display:flex;flex-direction:column;min-height:0">
+      <h3>历史任务</h3>
+      <div id="taskList"></div>
+    </div>
+  </div>
+  <div id="right" class="panel">
+    <div id="detail"><div class="empty">选择视频开始检测，或从左侧选择历史任务查看结果</div></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const STATE_TEXT = { loading: '加载模型', running: '检测中', finish: '已完成', error: '失败' };
+let selectedFile = null, currentTask = null, shownState = null;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---------- 选择文件 ----------
+$('drop').onclick = () => $('file').click();
+$('file').onchange = () => pick($('file').files[0]);
+$('drop').ondragover = e => { e.preventDefault(); $('drop').classList.add('over'); };
+$('drop').ondragleave = () => $('drop').classList.remove('over');
+$('drop').ondrop = e => { e.preventDefault(); $('drop').classList.remove('over'); pick(e.dataTransfer.files[0]); };
+
+function pick(file) {
+  if (!file) return;
+  selectedFile = file;
+  $('fileName').textContent = `${file.name}（${(file.size / 1024 / 1024).toFixed(1)} MB）`;
+  $('startBtn').disabled = false;
+  $('msg').textContent = '';
+  $('uploadBar').style.width = '0';
+}
+
+// ---------- 上传并开始检测 ----------
+$('startBtn').onclick = () => {
+  if (!selectedFile) return;
+  const form = new FormData();
+  form.append('video', selectedFile);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/fault/aqmOffline/upload');
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      $('uploadBar').style.width = (e.loaded / e.total * 100) + '%';
+      $('msg').textContent = `上传中 ${(e.loaded / e.total * 100).toFixed(0)}%`;
+    }
+  };
+  xhr.onload = () => {
+    $('startBtn').disabled = false;
+    let res;
+    try { res = JSON.parse(xhr.responseText); } catch { res = { code: xhr.status, msg: '服务返回异常' }; }
+    if (res.code === 200) {
+      $('msg').style.color = '#67c23a';
+      $('msg').textContent = '上传成功，开始检测';
+      loadTasks().then(() => selectTask(res.taskId));
+    } else {
+      $('msg').style.color = '#f56c6c';
+      $('msg').textContent = '失败：' + res.msg;
+    }
+  };
+  xhr.onerror = () => {
+    $('startBtn').disabled = false;
+    $('msg').style.color = '#f56c6c';
+    $('msg').textContent = '上传失败，请确认服务已启动';
+  };
+  $('startBtn').disabled = true;
+  $('msg').style.color = '#333';
+  xhr.send(form);
+};
+
+// ---------- 任务列表 ----------
+async function loadTasks() {
+  try {
+    const res = await (await fetch('/api/fault/aqmOffline/tasks')).json();
+    const list = res.tasks || [];
+    $('taskList').innerHTML = list.length ? list.map(t => `
+      <div class="task ${t.taskId === currentTask ? 'active' : ''}" data-id="${esc(t.taskId)}">
+        <b>${esc(t.taskId)}</b>
+        <span class="tag ${esc(t.state)}">${STATE_TEXT[t.state] || esc(t.state)}</span>
+        ${t.alarms && t.alarms.length ? `<span class="tag alarm-num">告警 ${t.alarms.length}</span>` : ''}
+        <div class="path">${esc(t.videoPath)}</div>
+      </div>`).join('') : '<div class="empty">暂无任务</div>';
+    document.querySelectorAll('.task').forEach(el => el.onclick = () => selectTask(el.dataset.id));
+  } catch (e) {
+    $('taskList').innerHTML = '<div class="empty">无法连接服务</div>';
+  }
+}
+
+function selectTask(taskId) {
+  currentTask = taskId;
+  shownState = null;
+  document.querySelectorAll('.task').forEach(el => el.classList.toggle('active', el.dataset.id === taskId));
+  refreshDetail();
+}
+
+// ---------- 任务详情 ----------
+async function refreshDetail() {
+  if (!currentTask) return;
+  const taskId = currentTask;
+  let res;
+  try { res = await (await fetch('/api/fault/aqmOffline/task/' + encodeURIComponent(taskId))).json(); } catch { return; }
+  if (taskId !== currentTask || res.code !== 200) return;
+  const t = res.task, base = '/result/' + encodeURIComponent(t.taskId) + '/';
+  const alarms = t.alarms || [];
+  const key = t.state + ':' + alarms.length + ':' + (t.state === 'finish' ? '' : t.frame);
+  if (key === shownState) return;  // 状态未变化时不重绘，避免打断视频播放
+  shownState = key;
+
+  let html = `<div class="summary"><b>任务：</b>${esc(t.taskId)}
+    <span class="tag ${esc(t.state)}">${STATE_TEXT[t.state] || esc(t.state)}</span><br>
+    <b>视频：</b>${esc(t.videoPath)}</div>`;
+  if (t.state === 'loading') {
+    html += '<div class="empty">正在加载模型…</div>';
+  } else if (t.state === 'running') {
+    const pct = t.total ? Math.min(t.frame / t.total * 100, 100) : 0;
+    html += `<div>检测进度：${t.frame} / ${t.total || '?'} 帧（${pct.toFixed(1)}%）</div>
+      <div class="bar"><div style="width:${pct}%"></div></div>`;
+  } else if (t.state === 'error') {
+    html += `<div class="empty" style="color:#f56c6c">检测失败：${esc(t.error)}</div>`;
+  } else if (t.video) {
+    html += `<video id="player" src="${base + encodeURIComponent(t.video)}" controls></video>`;
+  }
+  html += `<h3 style="margin-top:16px">告警截图（${alarms.length}）</h3>`;
+  html += alarms.length ? '<div id="alarms">' + alarms.map(a => `
+      <div class="alarm" data-time="${a.time}">
+        <img src="${base + encodeURIComponent(a.image)}" loading="lazy">
+        <div>第 ${a.frame} 帧 · ${a.time.toFixed(1)} 秒</div>
+      </div>`).join('') + '</div>'
+    : `<div class="empty">${t.state === 'finish' ? '未发现未戴安全帽' : '暂无'}</div>`;
+  $('detail').innerHTML = html;
+  // 点击告警截图跳转到视频对应时间
+  document.querySelectorAll('.alarm').forEach(el => el.onclick = () => {
+    const player = $('player');
+    if (player) { player.currentTime = parseFloat(el.dataset.time); player.play(); }
+    else window.open(el.querySelector('img').src);
+  });
+}
+
+loadTasks();
+setInterval(() => { loadTasks(); refreshDetail(); }, 2000);
+</script>
+</body>
+</html>

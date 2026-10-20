@@ -32,6 +32,8 @@ cd seg_to_json && PYTHONPATH=.. python segment_demo.py
 - 服务地址、上传回调 URL、模型参数都读自 `config/address_configuration.json`（相对路径，须在项目根启动）。全局 URL 变量在 `__main__` 中赋值，所以必须通过 `python safety_xxx.py` 启动。
 - 业务类完成后通过 `util.py` 的 `upfile_img` / `upfile_mp4` / `upfile_msg` 把截图、视频、结果回调给外部平台；当前配置中的 `127.0.0.1:8080` 是占位地址，上传失败不影响本地结果。
 - **只有 `service/aqm_offline.py`（`Helmet_offline`）存在**，且是按推测重写的最小实现（`vest_helmet.pt`，类别 helmet/nohelmet/reflective/noreflectivez，`nohelmet` 触发告警）。`aqm_online`、`count`、`danger`、`process` 的 service 模块缺失，启用对应服务会 ImportError。
+- 可视化界面：`safety_aqm_offline.py` 启动后自动打开 `http://127.0.0.1:5002/ui`（页面在 `web/aqm_offline.html`）。浏览器上传的视频存到 `upload/aqm_offline/`，taskId 自动生成为时间戳。`Helmet_offline` 把进度、告警写入 `result/aqm_offline/<taskId>/status.json`，界面每 2 秒轮询 `/api/fault/aqmOffline/tasks`、`/task/<taskId>`。只有带 `status.json` 的任务会出现在界面里。
+- 结果视频用 `avc1`（H.264，Windows 下走 MSMF 后端）编码以便浏览器播放，体积约为 mp4v 的 10 倍（1080p 约 50Mbps），且 OpenCV 的质量参数对 MSMF 无效。
 
 **2. 自动标注工具**
 - `det_to_xml/`：`yolo_detector` 推理 → VOC XML（支持 `KEEP_CLASSES` 过滤）。

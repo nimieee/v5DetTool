@@ -1,10 +1,13 @@
-from flask import Flask, request
+from flask import Flask, request, send_from_directory, abort
 import json
-from service.aqm_offline import Helmet_offline
+from service.aqm_offline import Helmet_offline, write_status
 from util import check_video_stream, Logger
 import GPUtil
 import multiprocessing
 import os
+import re
+import threading
+import webbrowser
 from datetime import datetime
 
 app = Flask(__name__)  # 接收http请求
@@ -22,6 +25,7 @@ def index():
     return {'service': '安全帽离线检测',
             'status': 'running',
             'gpu': gpus,
+            'ui': '/ui',
             'api': {'url': '/api/fault/aqmOffline',
                     'method': 'GET',
                     'params': {'taskId': '任务id', 'videoPath': '视频文件路径'},
@@ -49,26 +53,105 @@ def aqm_Offline():
         # 视频文件是否正确
         stream_state = check_video_stream(videoPath)
         if stream_state:
-            gpus = GPUtil.getGPUs()
-            memoryFree = gpus[0].memoryFree
-            if memoryFree <= 2000:
-                # 开始执行
-                res_t = {'code': 400,
-                         'msg': 'gpu out of memory'
-                         }
-            else:
-                multiprocessing.Process(target=aqm_offline_function,
-                                        args=(taskId, videoPath, aqm_upfile_url, aqm_img_msg_url,
-                                              aqm_video_msg_url, aqm_msg_url)).start()
-                # 开始执行
-                res_t = {'code': 200,
-                         'msg': 'success'
-                         }
+            res_t = start_task(taskId, videoPath)
         else:
             res_t = {'code': 400,
                      'msg': 'error videoPath'
                      }
     return res_t
+
+
+# 检查显存后启动后台检测进程
+def start_task(taskId, videoPath):
+    gpus = GPUtil.getGPUs()
+    memoryFree = gpus[0].memoryFree
+    if memoryFree <= 2000:
+        return {'code': 400,
+                'msg': 'gpu out of memory'
+                }
+    # 先写入排队状态，界面在模型加载完成前也能查到任务
+    write_status(os.path.join(save_path, taskId), {'taskId': taskId, 'videoPath': videoPath, 'state': 'loading',
+                                                   'frame': 0, 'total': 0, 'alarms': [], 'video': None})
+    multiprocessing.Process(target=aqm_offline_function,
+                            args=(taskId, videoPath, aqm_upfile_url, aqm_img_msg_url,
+                                  aqm_video_msg_url, aqm_msg_url)).start()
+    # 开始执行
+    return {'code': 200,
+            'msg': 'success',
+            'taskId': taskId
+            }
+
+
+# ===================== 可视化界面 =====================
+TASK_ID_PATTERN = re.compile(r'^[\w\-]+$')
+
+
+# 界面：选择本地视频并查看检测结果
+@app.route('/ui', methods=['GET'])
+def ui():
+    return send_from_directory('web', 'aqm_offline.html')
+
+
+# 界面上传视频：保存到 upload 目录后启动检测
+@app.route('/api/fault/aqmOffline/upload', methods=['POST'])
+def aqm_offline_upload():
+    file = request.files.get('video')
+    if file is None or not file.filename:
+        return {'code': 400, 'msg': '未选择视频文件'}
+    taskId = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ext = os.path.splitext(file.filename)[1].lower() or '.mp4'
+    os.makedirs(upload_path, exist_ok=True)
+    videoPath = os.path.join(upload_path, taskId + ext)
+    file.save(videoPath)
+    if not check_video_stream(videoPath):
+        os.remove(videoPath)
+        return {'code': 400, 'msg': '无法解析该视频文件'}
+    res_t = start_task(taskId, videoPath)
+    res_t['fileName'] = file.filename
+    return res_t
+
+
+# 任务列表（按时间倒序）
+@app.route('/api/fault/aqmOffline/tasks', methods=['GET'])
+def aqm_offline_tasks():
+    tasks = []
+    if os.path.isdir(save_path):
+        for taskId in os.listdir(save_path):
+            status = read_status(taskId)
+            if status is not None:
+                tasks.append(status)
+    tasks.sort(key=lambda t: t['taskId'], reverse=True)
+    return {'code': 200, 'tasks': tasks}
+
+
+# 单个任务的状态
+@app.route('/api/fault/aqmOffline/task/<taskId>', methods=['GET'])
+def aqm_offline_task(taskId):
+    status = read_status(taskId)
+    if status is None:
+        return {'code': 404, 'msg': '任务不存在'}
+    return {'code': 200, 'task': status}
+
+
+# 结果文件（视频、告警截图）
+@app.route('/result/<taskId>/<path:filename>', methods=['GET'])
+def aqm_offline_result(taskId, filename):
+    if not TASK_ID_PATTERN.match(taskId):
+        abort(404)
+    return send_from_directory(os.path.abspath(os.path.join(save_path, taskId)), filename)
+
+
+def read_status(taskId):
+    if not TASK_ID_PATTERN.match(taskId):
+        return None
+    status_file = os.path.join(save_path, taskId, 'status.json')
+    if not os.path.isfile(status_file):
+        return None
+    try:
+        with open(status_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def aqm_offline_function(taskId, videoPath, aqm_upfile_url, aqm_img_msg_url,
@@ -88,7 +171,11 @@ def aqm_offline_function(taskId, videoPath, aqm_upfile_url, aqm_img_msg_url,
                                  aqm_upfile_url=aqm_upfile_url, aqm_img_msg_url=aqm_img_msg_url,
                                  aqm_video_msg_url=aqm_video_msg_url, aqm_msg_url=aqm_msg_url)
 
-    aqm_Offline.detect()
+    try:
+        aqm_Offline.detect()
+    except Exception as e:
+        log.logger.exception(f"检测异常: {e}")
+        aqm_Offline.write_status(state='error', error=str(e))
     log.logger.info(f"=====安全帽离线诊断线程执行完毕,taskID is : {taskId} ,videoPath is :{videoPath}=====")
 
 
@@ -106,6 +193,12 @@ if __name__ == '__main__':
     aqm_img_msg_url = config_url["aqm_offline"]["aqm_img_msg_url"]  # 图片保存地址上传json的url
     aqm_video_msg_url = config_url["aqm_offline"]["aqm_video_msg_url"]  # 视频保存地址上传的Json的url
     aqm_msg_url = config_url["aqm_offline"]["aqm_msg_url"]  # 任务结束的信息
+    save_path = config_url["aqm_offline"].get("save_path", "result/aqm_offline")  # 检测结果目录
+    upload_path = "upload/aqm_offline"  # 界面上传的视频保存目录
+
+    print(f" * 可视化界面: http://127.0.0.1:{app.config['PORT']}/ui")
+    # 服务启动后自动在浏览器打开可视化界面
+    threading.Timer(1.5, webbrowser.open, args=(f"http://127.0.0.1:{app.config['PORT']}/ui",)).start()
 
     '''
         第四步： 开启flask服务

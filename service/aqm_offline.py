@@ -34,6 +34,15 @@ CONFIG_PATH = "config/address_configuration.json"
 VIOLATION_CLASSES = {'nohelmet'}
 
 
+# 原子写入任务状态文件，避免界面读到写了一半的 JSON
+def write_status(save_path, status):
+    os.makedirs(save_path, exist_ok=True)
+    tmp_path = os.path.join(save_path, "status.json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False)
+    os.replace(tmp_path, os.path.join(save_path, "status.json"))
+
+
 class Helmet_offline(object):
     def __init__(self, taskId, log, time_id, videoPath,
                  aqm_upfile_url, aqm_img_msg_url, aqm_video_msg_url, aqm_msg_url):
@@ -60,6 +69,15 @@ class Helmet_offline(object):
         self.class_name = self.detector.model.names
         self.log.logger.info(f"模型加载完成: {model_cfg['weights']}, device={device}, 类别={self.class_name}")
 
+        # 任务状态，写入 status.json 供可视化界面轮询
+        self.status = {'taskId': taskId, 'videoPath': videoPath, 'state': 'running',
+                       'frame': 0, 'total': 0, 'alarms': [], 'video': None}
+        self.write_status()
+
+    def write_status(self, **kwargs):
+        self.status.update(kwargs)
+        write_status(self.save_path, self.status)
+
     # 画框，返回是否存在未戴安全帽
     def draw_result(self, frame, img_info):
         no_helmet = False
@@ -81,14 +99,19 @@ class Helmet_offline(object):
         cap = cv.VideoCapture(self.videoPath)
         if not cap.isOpened():
             self.log.logger.error(f"视频打开失败: {self.videoPath}")
+            self.write_status(state='error', error='视频打开失败')
             return
         fps = cap.get(cv.CAP_PROP_FPS) or 25
         width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        self.write_status(total=int(cap.get(cv.CAP_PROP_FRAME_COUNT)), fps=fps)
 
         video_name = f"{self.time_id}.mp4"
         video_path = os.path.join(self.save_path, video_name)
-        out = cv.VideoWriter(video_path, cv.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        # 优先用 H.264（avc1），浏览器可直接播放；不支持时退回 mp4v
+        out = cv.VideoWriter(video_path, cv.VideoWriter_fourcc(*'avc1'), fps, (width, height))
+        if not out.isOpened():
+            out = cv.VideoWriter(video_path, cv.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
         frame_id = 0
         alarm_count = 0
@@ -110,10 +133,13 @@ class Helmet_offline(object):
                 alarm_count += 1
                 self.alarm(frame, frame_id, current_time)
             frame_id += 1
+            if frame_id % 30 == 0:
+                self.write_status(frame=frame_id)
 
         cap.release()
         out.release()
         self.log.logger.info(f"视频处理完成，共 {frame_id} 帧，告警 {alarm_count} 次，结果视频: {video_path}")
+        self.write_status(state='finish', frame=frame_id, total=frame_id, video=video_name)
 
         msg, ok = upfile_mp4(self.aqm_upfile_url, video_path, video_name)
         self.log.logger.info(f"结果视频上传: ok={ok}, msg={msg}")
@@ -129,6 +155,8 @@ class Helmet_offline(object):
         frame_name = f"{self.time_id}_{frame_id}.jpg"
         cv.imwrite(os.path.join(self.save_path, frame_name), frame)
         self.log.logger.warning(f"发现未戴安全帽: 第 {frame_id} 帧（{current_time:.1f}s）")
+        self.status['alarms'].append({'frame': frame_id, 'time': round(current_time, 2), 'image': frame_name})
+        self.write_status(frame=frame_id)
 
         msg, ok = upfile_img(self.aqm_upfile_url, frame, frame_name)
         if not ok:
